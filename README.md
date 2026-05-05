@@ -9,7 +9,7 @@ HER is a **local, privacy-first** desktop companion for Apple Silicon Macs. **Ph
 - **Xcode Command Line Tools** (`xcode-select --install`)
 - **Python 3.12+** (installed by `setup.sh` if missing)
 - **Ollama** with `qwen2.5:7b` pulled locally
-- **whisper.cpp** binary on `PATH` (Homebrew `whisper-cpp` or build from source) + **medium** weights in `data/models/whisper/ggml-medium.bin` (see `data/models/whisper/README.txt`)
+- **whisper.cpp** binary on `PATH` (Homebrew `whisper-cpp` or build from source). For best accuracy, install the **medium** model weights (downloaded by `setup.sh` when `HER_FETCH_WHISPER_MODEL=1`).
 - (English-only build) Speech output uses Kokoro’s English voice path.
 
 ## Quick start
@@ -32,7 +32,7 @@ You should see `Python WebSocket server started on ws://localhost:8765`, then **
 - `frontend/` — Chat transcript + connection pill + waveform
 - `src-tauri/` — Rust/Tauri shell
 - `scripts/` — `run-backend.sh`, `download_voice_models.sh`, `generate_tauri_icon.py`
-- `data/models/` — Downloaded weights (gitignored large binaries recommended)
+- `data/` — Local runtime data (downloaded weights + temp files). Not committed to git.
 
 ## Troubleshooting
 

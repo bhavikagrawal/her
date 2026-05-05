@@ -11,6 +11,5 @@ target/
 *.log
 .DS_Store
 
-# Large local model assets (download via scripts/; don't commit)
-data/models/
-data/tmp/
+# Local runtime data (models, temp audio, caches). Keep `data/` fully out of git.
+data/

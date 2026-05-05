@@ -5,7 +5,7 @@
 - `backend/voice/session.py` `VoiceSession`: 16 kHz capture, `silero-vad-lite` with barge-in, `whisper.cpp` **English-only STT** (`-l en`), Ollama `qwen2.5:7b` **streaming** to the UI, **Kokoro** English-only TTS, plus a non-English guard (blocks non-English transcripts and asks to repeat in English).
 - `backend/main.py` spawns one **daemon** voice thread per WebSocket client; JSON event types: `voice_ready`, `user_transcript`, `assistant_reset`, `assistant_delta`, `her_speaking`, `error`.
 - `frontend/`: user bubbles (right), HER (left) with live token deltas, bottom **waveform** when `her_speaking` is active.
-- `scripts/download_voice_models.sh` + `data/models/kokoro/` for Kokoro weights; `data/models/whisper/README.txt` for medium model placement; `setup.sh` now prefers **Python 3.12**, reuses venv, runs Kokoro download, and ensures the Tauri **RGBA** icon exists.
+- `scripts/download_voice_models.sh` for Kokoro weights; optional `scripts/download_whisper_medium.sh` for whisper.cpp medium weights; `setup.sh` now prefers **Python 3.12**, reuses venv, runs Kokoro download, and ensures the Tauri **RGBA** icon exists.
 - On-screen name is hardcoded **User** (per Phase 1 spec) for system-prompt testing.
 
 ## What Phase 0 delivered (foundation)

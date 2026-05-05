@@ -78,7 +78,8 @@ if [[ ! -f "${WHISPER_MODEL_PATH}" ]]; then
     echo "  ${WHISPER_MODEL_PATH}"
     echo "To download automatically (large ~1.5GB), rerun:"
     echo "  HER_FETCH_WHISPER_MODEL=1 bash setup.sh"
-    echo "Or download manually (see data/models/whisper/README.txt)."
+    echo "Or download the whisper.cpp medium model manually into:"
+    echo "  ${WHISPER_MODEL_PATH}"
   fi
 fi
 
