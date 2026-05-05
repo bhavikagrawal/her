@@ -1,0 +1,19 @@
+# Cargo manifest for the HER desktop shell built with Tauri (Rust wrapping a WebView).
+# Tauri loads the `frontend/` assets and shows them in a native macOS window on Apple Silicon.
+# The Python WebSocket server is a separate process started by `tauri dev` before the window opens.
+# This crate stays intentionally small in Phase 0 so the proof focuses on connectivity, not Rust.
+
+[package]
+name = "her"
+version = "0.1.0"
+description = "HER local-first companion — Tauri shell"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

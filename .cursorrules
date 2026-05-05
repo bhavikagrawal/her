@@ -1,0 +1,53 @@
+
+# HER — Cursor rules v2
+
+OWNER CONTEXT
+New to Python and AI. Never skip explanations.
+Every file needs 4-line teaching comment block at top.
+Every phase needs PHASE_COMPLETE.md with exact copy-pasteable test commands.
+
+PHASE DISCIPLINE
+Build ONE phase at a time. Stop after each. Wait for explicit "go ahead".
+Never reference future phases in current code (no forward dependencies).
+Each phase must be fully testable before the next begins.
+
+PROACTIVE SYSTEM RULES
+HER always speaks first on session start — never wait for user.
+Lull detector fires at 8 seconds of silence, not before.
+Check-in timer fires at 3 minutes of silence — must be cancellable.
+Profile gap questions: never repeat. Always mark as asked in SQLite immediately.
+First greeting: generated fresh by LLM every time, never hardcoded.
+
+ONBOARDING RULES
+Detect first launch via SQLite profile.setup_complete field.
+Form fields fade in one at a time — never all at once.
+No submit button — Enter key on last field triggers completion.
+After form: mandatory fade to black before greeting audio starts.
+Second launch: skip straight to chat. No form, no greeting.
+
+CODE RULES
+Real working code only. No TODOs. No placeholder functions.
+Full type hints on every function. Every blocking op checks stop_event.
+No circular imports. pathlib.Path for all file paths. Never hardcode paths.
+All LLM calls use streaming. Sentence boundaries trigger TTS dispatch.
+Any new environment variable MUST be documented in ENVIRONMENT.md (name, default, purpose, example).
+
+VOICE RULES
+Model: qwen2.5:7b always. 16GB RAM — never suggest larger models.
+Whisper: always --language auto. Never hardcode a language.
+Before every TTS call: check for Devanagari (U+0900–U+097F) → route to Piper.
+stop_event and speaking_event are sacred. Never bypass or ignore them.
+VAD daemon starts before main loop. Always.
+
+PRIVACY RULES
+Voice samples: local only, never transmitted.
+Memory: ChromaDB local only.
+Online calls: only after decision.py approves + identifiers stripped.
+Generated agents: syntax validated, subprocess sandboxed, timeout enforced.
+
+TEACHING RULES
+Every new Python concept: explain inline with CONCEPT comment.
+Every AI/ML concept: real-world analogy in comment.
+Every architectural choice: one-line reason in comment.
+PHASE_COMPLETE.md: what was built, test commands, expected output,
+  most likely failure + diagnosis, what next phase adds.

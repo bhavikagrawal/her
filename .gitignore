@@ -1,0 +1,14 @@
+# HER local-only artifacts — keep builds, caches, and venv out of git.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+target/
+*.log
+.DS_Store
+
+# Large local model assets (download via scripts/; don't commit)
+data/models/
+data/tmp/

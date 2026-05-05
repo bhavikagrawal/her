@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Core capability for the HER main window.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

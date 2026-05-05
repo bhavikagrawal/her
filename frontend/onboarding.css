@@ -1,0 +1,8 @@
+/*
+  Styles for the fullscreen onboarding flow (fade-in fields, cinematic spacing).
+  Phase 0 loads this file early so future markup can attach without rearranging `<head>` tags.
+  The stylesheet is intentionally small now; it only shares color tokens via the main chat sheet.
+  Separating onboarding from chat CSS keeps animation rules from fighting bubble layout later.
+*/
+
+/* Placeholder: onboarding layout hooks will attach to `.onboarding-*` classes in later work. */

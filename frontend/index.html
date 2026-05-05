@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<!--
+  HER web surface: connection health, chat transcript, and a waveform when SHE is speaking.
+  Phase 1 uses only the CHAT view — onboarding / greeting layers come in a later milestone.
+  The static layout keeps Node bundlers optional so Python learners can focus on backend flow.
+  System fonts + the dark palette mirror the spec’s cinematic, minimal tone (#0a0a0a canvas).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>HER</title>
+    <link rel="stylesheet" href="chat.css" />
+    <link rel="stylesheet" href="onboarding.css" />
+  </head>
+  <body>
+    <div id="app-root" class="app-root">
+      <header class="top-bar">
+        <div class="connection-cluster" aria-live="polite">
+          <div id="status-dot" class="status-dot" role="presentation"></div>
+          <p id="status-label" class="status-label">connecting…</p>
+          <div id="mic-meter" class="mic-meter mic-meter--hidden" aria-label="Mic level">
+            <span id="mic-meter-bar" class="mic-meter__bar"></span>
+          </div>
+          <button
+            id="mic-mute-button"
+            class="icon-button icon-button--mic"
+            type="button"
+            aria-label="Mute microphone"
+            title="Mute microphone"
+          >
+            <!-- mic-on (default; JS swaps to mic-off when muted) -->
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                d="M12 2a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V5a3 3 0 0 1 3-3Z"
+                fill="currentColor"
+                opacity="0.9"
+              />
+              <path
+                d="M7 11a1 1 0 0 1 2 0 3 3 0 1 0 6 0 1 1 0 1 1 2 0 5 5 0 0 1-4 4.9V20a1 1 0 1 1-2 0v-3.1A5 5 0 0 1 7 11Z"
+                fill="currentColor"
+                opacity="0.9"
+              />
+            </svg>
+          </button>
+          <button
+            id="volume-button"
+            class="icon-button icon-button--volume"
+            type="button"
+            aria-label="Mute HER voice"
+            title="Mute HER voice"
+          >
+            <!-- speaker-on (default; JS swaps to speaker-off when muted) -->
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                d="M11 4.5a1 1 0 0 1 1.64-.77l4.2 3.5a1 1 0 0 1 .36.77v8a1 1 0 0 1-.36.77l-4.2 3.5A1 1 0 0 1 11 19.5V4.5Z"
+                fill="currentColor"
+                opacity="0.9"
+              />
+              <path
+                d="M3.5 10a1 1 0 0 1 1-1H11v6H4.5a1 1 0 0 1-1-1v-4Z"
+                fill="currentColor"
+                opacity="0.9"
+              />
+              <path
+                d="M17.2 8.2a1 1 0 0 1 1.4.1 6 6 0 0 1 0 7.4 1 1 0 0 1-1.6-1.2 4 4 0 0 0 0-5 1 1 0 0 1 .2-1.3Z"
+                fill="currentColor"
+                opacity="0.75"
+              />
+              <path
+                d="M19.4 6.1a1 1 0 0 1 1.4.2 9 9 0 0 1 0 11.4 1 1 0 1 1-1.6-1.2 7 7 0 0 0 0-9 1 1 0 0 1 .2-1.4Z"
+                fill="currentColor"
+                opacity="0.45"
+              />
+            </svg>
+          </button>
+        </div>
+        <div
+          id="audio-controls"
+          class="audio-controls audio-controls--hidden"
+          aria-label="Audio devices"
+        >
+          <label class="audio-controls__label" for="audio-input"
+            >Mic</label
+          >
+          <select id="audio-input" class="audio-controls__select"></select>
+          <label class="audio-controls__label" for="audio-output"
+            >Speaker</label
+          >
+          <select id="audio-output" class="audio-controls__select"></select>
+        </div>
+        <p class="phase-hint">Phase 1 — voice loop (name: User)</p>
+      </header>
+      <main id="chat-main" class="chat-main">
+        <div id="chat-stream" class="chat-stream"></div>
+      </main>
+      <div id="waveform" class="waveform" aria-hidden="true"></div>
+      <div id="chat-bar" class="chat-bar chat-bar--hidden" aria-label="Chat input">
+        <input
+          id="chat-input"
+          class="chat-bar__input"
+          type="text"
+          placeholder="Type to talk…"
+          autocomplete="off"
+        />
+        <button id="chat-send" class="chat-bar__send" type="button" aria-label="Send" title="Send">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path
+              d="M3.6 12.6 20 4.2a1 1 0 0 1 1.4 1.2l-3.2 14.9a1 1 0 0 1-1.6.6l-5.1-3.7-3.1 3.1a1 1 0 0 1-1.7-.7v-4.4l9.9-8.6-12 6.4a1 1 0 0 1-1.4-.9 1 1 0 0 1 .4-.8Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+        <button id="chat-close" class="chat-bar__close" type="button" aria-label="Close chat" title="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path
+              d="M18.3 5.7a1 1 0 0 1 0 1.4L13.4 12l4.9 4.9a1 1 0 1 1-1.4 1.4L12 13.4l-4.9 4.9a1 1 0 1 1-1.4-1.4L10.6 12 5.7 7.1a1 1 0 0 1 1.4-1.4L12 10.6l4.9-4.9a1 1 0 0 1 1.4 0Z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+      </div>
+      <button id="chat-button" class="chat-button" type="button" aria-label="Chat">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path
+            d="M4.5 5.5A3.5 3.5 0 0 1 8 2h8a3.5 3.5 0 0 1 3.5 3.5v7A3.5 3.5 0 0 1 16 16H9.2l-3.6 3.1A1 1 0 0 1 4 18.3V16A3.5 3.5 0 0 1 4.5 5.5Z"
+            fill="currentColor"
+            opacity="0.9"
+          />
+          <path
+            d="M8 7.8a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm0 3.6a1 1 0 0 1 1-1h4.2a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Z"
+            fill="currentColor"
+          />
+        </svg>
+      </button>
+      <button id="settings-button" class="settings-button" type="button" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path
+            d="M12 8.2a3.8 3.8 0 1 1 0 7.6 3.8 3.8 0 0 1 0-7.6Z"
+            fill="currentColor"
+          />
+          <path
+            d="M19.4 13.2a7.9 7.9 0 0 0 0-2.4l2-1.6a1 1 0 0 0 .24-1.27l-1.9-3.3a1 1 0 0 0-1.2-.45l-2.4 1a8.4 8.4 0 0 0-2.1-1.2l-.36-2.6A1 1 0 0 0 12.7 0h-3.4a1 1 0 0 0-.99.86l-.36 2.6a8.4 8.4 0 0 0-2.1 1.2l-2.4-1a1 1 0 0 0-1.2.45L.32 7.95A1 1 0 0 0 .56 9.2l2 1.6a7.9 7.9 0 0 0 0 2.4l-2 1.6a1 1 0 0 0-.24 1.27l1.9 3.3a1 1 0 0 0 1.2.45l2.4-1a8.4 8.4 0 0 0 2.1 1.2l.36 2.6a1 1 0 0 0 .99.86h3.4a1 1 0 0 0 .99-.86l.36-2.6a8.4 8.4 0 0 0 2.1-1.2l2.4 1a1 1 0 0 0 1.2-.45l1.9-3.3a1 1 0 0 0-.24-1.27l-2-1.6ZM12 6.2a5.8 5.8 0 1 0 0 11.6 5.8 5.8 0 0 0 0-11.6Z"
+            fill="currentColor"
+            opacity="0.55"
+          />
+        </svg>
+      </button>
+    </div>
+    <script src="app.js" defer></script>
+  </body>
+</html>

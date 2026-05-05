@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HER",
+  "version": "0.1.0",
+  "identifier": "com.her.desktop",
+  "build": {
+    "beforeDevCommand": "bash scripts/run-backend.sh",
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost ws://127.0.0.1:8765 ws://localhost:8765 http://127.0.0.1:* http://localhost:* https://tauri.localhost"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "HER",
+        "width": 960,
+        "height": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "shortDescription": "HER — local-first AI companion",
+    "longDescription": "HER is a privacy-first AI companion shell. Phase 0 validates the desktop + Python link."
+  }
+}

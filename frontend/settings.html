@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!--
+  Separate Settings window for HER.
+  CONCEPT: This window connects to the same backend WebSocket and writes settings into localStorage.
+  The main window reads the same localStorage key and applies changes live.
+  Keeping this as plain HTML/JS avoids bundlers in Phase 1.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HER — Settings</title>
+    <link rel="stylesheet" href="chat.css" />
+  </head>
+  <body>
+    <div class="app-root">
+      <main class="chat-main">
+        <div id="settings-body" class="settings-modal__body"></div>
+      </main>
+    </div>
+    <script src="settings.js" defer></script>
+  </body>
+</html>
+
