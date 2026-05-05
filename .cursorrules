@@ -34,8 +34,8 @@ Any new environment variable MUST be documented in ENVIRONMENT.md (name, default
 
 VOICE RULES
 Model: qwen2.5:7b always. 16GB RAM — never suggest larger models.
-Whisper: always --language auto. Never hardcode a language.
-Before every TTS call: check for Devanagari (U+0900–U+097F) → route to Piper.
+Whisper: Phase 1 is English-only (`-l en`). If non-English is detected, ask the user to repeat in English.
+Before every TTS call: apply the non-English guard (don’t attempt alternate TTS engines like Piper unless implemented).
 stop_event and speaking_event are sacred. Never bypass or ignore them.
 VAD daemon starts before main loop. Always.
 
