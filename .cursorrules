@@ -34,8 +34,10 @@ Any new environment variable MUST be documented in ENVIRONMENT.md (name, default
 
 VOICE RULES
 Model: qwen2.5:7b always. 16GB RAM — never suggest larger models.
-Whisper: Phase 1 is English-only (`-l en`). If non-English is detected, ask the user to repeat in English.
-Before every TTS call: apply the non-English guard (don’t attempt alternate TTS engines like Piper unless implemented).
+Whisper: Phase 1.5+ runs `-l auto`. Parse `auto-detected language:` from stderr and forward the ISO code through the pipeline.
+Language routing: Whisper for voice input, Lingua-py for typed input, both sticky to English on short/ambiguous strings (never block on language).
+TTS: pick a Kokoro voice when `lang_routing.PROFILES` has one; otherwise shell out to macOS `say`. Never crash silently — emit a `tts` error and keep the turn alive.
+System prompt: include a per-turn `## Language for this turn` directive so the LLM mirrors the user's language.
 stop_event and speaking_event are sacred. Never bypass or ignore them.
 VAD daemon starts before main loop. Always.
 

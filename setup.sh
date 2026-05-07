@@ -53,6 +53,7 @@ pip install -r "${ROOT}/requirements.txt"
 chmod +x "${ROOT}/scripts/run-backend.sh"
 chmod +x "${ROOT}/scripts/download_voice_models.sh"
 chmod +x "${ROOT}/scripts/download_whisper_medium.sh"
+chmod +x "${ROOT}/scripts/her_memory_status.sh"
 
 if [[ ! -f "${ROOT}/src-tauri/icons/icon.png" ]]; then
   echo "Writing placeholder src-tauri/icons/icon.png…"

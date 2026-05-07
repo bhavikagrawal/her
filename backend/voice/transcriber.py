@@ -1,24 +1,42 @@
 # Hands recorded audio to whisper.cpp so YOUR words become UTF-8 text before the LLM sees them.
 # Whisper runs as a subprocess — easier to swap Metal-enabled builds without recompiling HER.
-# Phase 1 (English-only): we pin `-l en` for faster + more consistent English transcripts.
+# Phase 1.5: STT is multilingual; we default to `-l auto` and parse Whisper's detected language.
 # Long runs are capped with a timeout so a stuck whisper build cannot wedge the companion process.
 
-"""whisper.cpp subprocess wrapper for local speech-to-text."""
+"""whisper.cpp subprocess wrapper for local speech-to-text (multilingual)."""
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from backend.her_paths import temp_audio_dir, whisper_model_path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """What whisper.cpp produced: the text plus the language it auto-detected."""
+
+    text: str
+    language: str  # ISO 639-1 code (e.g. "en"), or "" when unknown
+    detected: bool  # True when whisper used auto-detection (vs. forced `-l xx`)
+
+
+# Whisper logs to stderr something like:
+#   "auto-detected language: en (p = 0.967123)"
+# We grep that to learn what it heard. When the user forces `-l xx`, whisper does not print
+# this line, so the caller's chosen language is what we report.
+_LANG_RE = re.compile(r"auto-detected language:\s*([A-Za-z]{2,3})")
 
 
 def resolve_whisper_binary() -> Path | None:
@@ -56,10 +74,10 @@ def transcribe_file(
     whisper_bin: Path | None = None,
     model_path: Path | None = None,
     language: str | None = None,
-) -> str:
-    """Run whisper.cpp on `wav_path` and return transcript text."""
+) -> Transcript:
+    """Run whisper.cpp on `wav_path` and return a `Transcript` (text + detected language)."""
     if stop_event.is_set():
-        return ""
+        return Transcript("", "", False)
     timing_enabled = bool(int(os.environ.get("HER_VOICE_TIMING_LOG", "0")))
     t0 = time.monotonic()
     exe = whisper_bin or resolve_whisper_binary()
@@ -73,7 +91,10 @@ def transcribe_file(
             f"Whisper weights missing at {model} — download ggml-medium.bin into data/models/whisper/."
         )
     out_dir = Path(tempfile.mkdtemp(prefix="wh_spk_", dir=temp_audio_dir()))
-    lang = (language or os.environ.get("HER_STT_LANGUAGE", "en")).strip() or "en"
+    # CONCEPT: `auto` (the default) lets whisper.cpp guess the language. Pass an explicit
+    # ISO 639-1 (e.g. "en", "hi") to lock detection — useful for noisy mics or testing.
+    chosen = language if language else os.environ.get("HER_STT_LANGUAGE", "auto")
+    raw_lang = (chosen or "auto").strip().lower() or "auto"
     cmd = [
         str(exe),
         "-m",
@@ -81,7 +102,7 @@ def transcribe_file(
         "-f",
         str(wav_path.resolve()),
         "-l",
-        lang,
+        raw_lang,
         "-otxt",
         "-of",
         "utt",
@@ -98,21 +119,37 @@ def transcribe_file(
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("whisper.cpp timed out — model too heavy or audio corrupt.") from exc
     if stop_event.is_set():
-        return ""
+        return Transcript("", "", False)
     if completed.returncode != 0:
         err = completed.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"whisper failed ({completed.returncode}): {err}")
+
+    stderr_text = completed.stderr.decode("utf-8", errors="replace")
+    detected_lang = ""
+    used_auto = raw_lang == "auto"
+    if used_auto:
+        m = _LANG_RE.search(stderr_text)
+        if m:
+            detected_lang = m.group(1).lower()
+    else:
+        detected_lang = raw_lang
+
     if timing_enabled:
-        logger.info("voice_timing stage=whisper_subprocess ms=%.1f", (time.monotonic() - t0) * 1000.0)
+        logger.info(
+            "voice_timing stage=whisper_subprocess ms=%.1f lang=%s detected=%s",
+            (time.monotonic() - t0) * 1000.0,
+            raw_lang,
+            detected_lang or "?",
+        )
     candidates = sorted(out_dir.glob("*.txt"))
     if not candidates:
         logger.warning("whisper produced no txt under %s", out_dir)
         for path in out_dir.glob("*"):
             path.unlink(missing_ok=True)
         out_dir.rmdir()
-        return ""
+        return Transcript("", detected_lang, used_auto)
     text = candidates[0].read_text(encoding="utf-8", errors="replace").strip()
     for path in out_dir.glob("*"):
         path.unlink(missing_ok=True)
     out_dir.rmdir()
-    return text
+    return Transcript(text, detected_lang, used_auto)

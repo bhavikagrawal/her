@@ -1,10 +1,12 @@
-# Co-locates ChromaDB soft memory and SQLite state for facts, settings, and safety logs.
-# Two stores are like quick notes on a desk (Chroma) and a locked filing cabinet (SQLite).
-# Phase 0 does not open either store; the app only checks the WebSocket control channel.
+# Co-locates MemPalace (Phase 2) and placeholders for future SQLite profile state.
+# MemPalace holds verbatim turns + Chroma retrieval; profile DB arrives in later phases.
+# The adapter stays thin so the voice loop does not import MemPalace internals directly.
 # Defining the package now keeps import paths stable for the rest of the repository.
 
 """Memory and structured state subpackage for HER."""
 
 from __future__ import annotations
 
-__all__: list[str] = []
+__all__: list[str] = ["HerMemPalace", "status_dict"]
+
+from backend.memory.mempalace_adapter import HerMemPalace, status_dict

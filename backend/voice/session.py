@@ -1,7 +1,9 @@
-# Orchestrates Phase 1: microphone chunks → Silero gate → Whisper → Qwen → Kokoro playback.
+# Orchestrates voice: microphone chunks → Silero gate → Whisper → MemPalace context → Qwen → Kokoro.
 # Runs in a dedicated worker thread so asyncio WebSockets stay responsive while audio blocks.
 # Two threading.Events enforce the workspace vows: global halt plus user “barge-in” during playback.
-# State machines stay explicit because voice UX bugs usually trace to sloppy phase mixing.
+# Language flow (Phase 1.5): Whisper auto-detects voice; Lingua-py classifies typed text; the
+#   ISO code is mirrored into the system prompt and routed to Kokoro/`say` so HER replies
+#   in the user's language without ever blocking on a "language" error.
 
 """Voice conversation loop used while the desktop WebSocket session is alive."""
 
@@ -11,12 +13,13 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
+import os
 import queue
 import tempfile
 import threading
 import time
-import os
-import math
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,7 @@ from silero_vad_lite import SileroVAD
 from websockets.legacy.server import WebSocketServerProtocol
 
 from backend.her_paths import temp_audio_dir
+from backend.memory.mempalace_adapter import HerMemPalace
 from backend.ollama_client import DEFAULT_MODEL, stream_chat
 from backend.voice.constants import (
     BARGE_IN_SPEECH_FRAMES,
@@ -36,6 +40,11 @@ from backend.voice.constants import (
     SILENCE_FRAMES_TO_END_UTTERANCE,
     VAD_SILENCE_CEIL,
     VAD_SPEECH_THRESHOLD,
+)
+from backend.voice.lang_routing import (
+    DEFAULT_LANG,
+    detect_text_language,
+    profile_for,
 )
 from backend.voice.preflight import check_mic_ready, check_whisper_ready
 from backend.voice.synthesizer import Synthesizer
@@ -59,86 +68,22 @@ class _CombinedStop:
 
 SYSTEM_PROMPT = (
     "You are HER — a warm, curious, attentive companion speaking to someone named User. "
-    "This build is English-only: ask the user to speak English and respond in natural spoken English. "
+    "Mirror the user's language: if they speak English, reply in natural spoken English; "
+    "if they speak another language, reply in that same language naturally. "
+    "When you are unsure, default to English. "
     "Keep replies concise for voice (usually under four short sentences)."
 )
 
 
-def looks_non_english(text: str) -> bool:
-    """
-    Language guard: return True when text looks non-English.
-
-    CONCEPT: Whisper is forced to English, but non-English utterances can still appear
-    (as transliterated Latin words, or with non-ASCII characters).
-    We use `langdetect` when available (offline, lightweight), and fall back to heuristics.
-    """
-    cleaned = text.strip()
-    if not cleaned:
-        return False
-
-    # Fast path: any non-ASCII letters strongly suggests non-English (or names with accents).
-    # This is intentionally strict to keep the build English-only.
-    if any(ord(ch) > 127 for ch in cleaned):
-        return True
-
-    # Prefer a real language detector when installed.
-    try:
-        # langdetect is pure-Python and runs offline.
-        from langdetect import detect  # type: ignore
-
-        lang = detect(cleaned)
-        return lang != "en"
-    except Exception:
-        pass
-
-    lowered = cleaned.casefold()
-    tokens = [t.strip(".,!?;:\"'()[]{}") for t in lowered.split()]
-    # Minimal non-English “tell” list: catches many Hinglish/Hindi and common Romance particles.
-    non_en_common = {
-        # Hinglish/Hindi
-        "haan",
-        "han",
-        "nahi",
-        "nahin",
-        "kya",
-        "kyu",
-        "kyun",
-        "kaise",
-        "kaisa",
-        "kaisi",
-        "kaun",
-        "mera",
-        "meri",
-        "mere",
-        "aap",
-        "tum",
-        "hai",
-        "hain",
-        # Spanish/French/Portuguese frequent words
-        "que",
-        "porque",
-        "para",
-        "pero",
-        "hola",
-        "gracias",
-        "bonjour",
-        "merci",
-        "ça",
-        "cest",
-        "por",
-    }
-    hits = sum(1 for t in tokens if t in non_en_common)
-    if hits >= 1:
-        return True
-
-    # Heuristic: if too few tokens look like English words (letters only), block.
-    alpha_tokens = [t for t in tokens if t.isalpha()]
-    if len(alpha_tokens) >= 3:
-        # Very rough: English tends to have many short function words; non-English transliterations can skew.
-        englishish = sum(1 for t in alpha_tokens if 2 <= len(t) <= 12)
-        if englishish / len(alpha_tokens) < 0.6:
-            return True
-    return False
+def _language_directive(lang_code: str) -> str:
+    """Return a one-line system instruction telling the LLM which language to speak in."""
+    profile = profile_for(lang_code)
+    if profile.code == DEFAULT_LANG:
+        return "Reply in natural spoken English."
+    return (
+        f"The user just spoke in {profile.label}. Reply in fluent, natural {profile.label}. "
+        "Do not switch back to English unless the user does."
+    )
 
 
 def drain_complete_sentences(buffer: str) -> tuple[list[str], str]:
@@ -207,6 +152,25 @@ class VoiceSession:
         # (clicks, focus sounds, device reconfig) that look like "speech" and trigger barge-in.
         # We track recent settings activity and ignore barge-in for a short cooldown window.
         self._last_settings_change = 0.0
+        self._session_key = uuid.uuid4().hex
+        self._turn_index = 0
+        self._mempalace = HerMemPalace(halt)
+        # ISO 639-1 code chosen for the *current* turn. Refreshed by `_apply_turn_context`.
+        self._current_lang: str = DEFAULT_LANG
+
+    def _apply_turn_context(self, user_line: str, lang_code: str) -> None:
+        """Refresh the system prompt with MemPalace memory + language directive for this turn."""
+        self._current_lang = lang_code or DEFAULT_LANG
+        block = self._mempalace.context_for_query(user_line, self._user_label, self._halt)
+        base = SYSTEM_PROMPT.replace("User", self._user_label)
+        directive = _language_directive(self._current_lang)
+        content = f"{base}\n\n## Language for this turn\n{directive}"
+        if block:
+            content += "\n\n## Memory (MemPalace — local)\n" + block
+        if self._messages and self._messages[0].get("role") == "system":
+            self._messages[0] = {"role": "system", "content": content}
+        else:
+            self._messages.insert(0, {"role": "system", "content": content})
 
     def enqueue_control(self, payload: dict[str, Any]) -> None:
         """Receive UI control messages from the asyncio WebSocket thread."""
@@ -254,8 +218,8 @@ class VoiceSession:
             "mic_meter": b("HER_MIC_METER", 1),
             "voice_timing_log": b("HER_VOICE_TIMING_LOG", 0),
             "convo_log": b("HER_CONVO_LOG", 0),
-            # STT
-            "stt_language": str(os.environ.get("HER_STT_LANGUAGE", "en")).strip() or "en",
+            # STT — `auto` lets Whisper pick the language each turn (Phase 1.5+).
+            "stt_language": str(os.environ.get("HER_STT_LANGUAGE", "auto")).strip() or "auto",
         }
 
     def _emit_settings_schema(self) -> None:
@@ -418,7 +382,7 @@ class VoiceSession:
         vad_silence_ceil = float(self._settings.get("vad_silence_ceil", 0.30))
         silence_frames_end = int(self._settings.get("silence_frames_end_utterance", 10))
         merge_window_s = float(self._settings.get("utterance_merge_window_s", 0.6))
-        stt_language = str(self._settings.get("stt_language", "en"))
+        stt_language = str(self._settings.get("stt_language", "auto"))
         synth.set_tts_levels(gain=float(self._settings.get("tts_gain", 2.35)), peak_target=float(self._settings.get("tts_peak", 0.92)))
 
         opener_spoken = False
@@ -508,7 +472,7 @@ class VoiceSession:
                         vad_silence_ceil = float(self._settings.get("vad_silence_ceil", 0.30))
                         silence_frames_end = int(self._settings.get("silence_frames_end_utterance", 10))
                         merge_window_s = float(self._settings.get("utterance_merge_window_s", 0.6))
-                        stt_language = str(self._settings.get("stt_language", "en"))
+                        stt_language = str(self._settings.get("stt_language", "auto"))
                         synth.set_tts_levels(
                             gain=float(self._settings.get("tts_gain", 2.35)),
                             peak_target=float(self._settings.get("tts_peak", 0.92)),
@@ -760,30 +724,34 @@ class VoiceSession:
                 continue
 
     def _handle_typed_text(self, text: str, synth: Synthesizer) -> None:
-        """Handle a typed chat message (no STT)."""
+        """Handle a typed chat message (no STT). Language is detected from the text itself."""
         cleaned = text.strip()
         if not cleaned:
             return
-        if looks_non_english(cleaned):
-            self._emit(
-                {
-                    "type": "error",
-                    "stage": "language",
-                    "message": "English-only mode: please type that in English.",
-                }
-            )
-            return
+        # CONCEPT: typed text has no Whisper to lean on, so we ask Lingua-py for the language.
+        # The detector is sticky to English on uncertainty, so we never block on short replies.
+        lang_code = detect_text_language(cleaned)
         convo_log = bool(self._settings.get("convo_log", False))
         self._turn_stop = threading.Event()
         self._interrupt.clear()
         if convo_log:
-            logger.info("typed_user %s", cleaned.replace("\n", " ").strip())
-        self._emit({"type": "user_transcript", "text": cleaned})
+            logger.info("typed_user lang=%s %s", lang_code, cleaned.replace("\n", " ").strip())
+        self._emit({"type": "user_transcript", "text": cleaned, "lang": lang_code})
         self._messages.append({"role": "user", "content": cleaned})
+        self._apply_turn_context(cleaned, lang_code)
         self._emit({"type": "assistant_reset"})
         try:
             self._emit({"type": "status_text", "text": "thinking…"})
-            self._stream_reply(synth)
+            reply = self._stream_reply(synth)
+            if reply:
+                self._mempalace.record_turn(
+                    self._session_key,
+                    self._turn_index,
+                    cleaned,
+                    reply,
+                    self._halt,
+                )
+                self._turn_index += 1
         finally:
             self._emit({"type": "status_text", "text": "listening…"})
 
@@ -812,13 +780,18 @@ class VoiceSession:
             )
         try:
             t_wh0 = time.monotonic()
-            text = transcribe_file(wav_path, self._halt, language=str(self._settings.get("stt_language", "en")))
+            transcript = transcribe_file(
+                wav_path,
+                self._halt,
+                language=str(self._settings.get("stt_language", "auto")),
+            )
             t_wh1 = time.monotonic()
             if timing_enabled:
                 logger.info(
-                    "voice_timing stage=whisper_done ms=%.1f ms_since_dequeue=%.1f",
+                    "voice_timing stage=whisper_done ms=%.1f ms_since_dequeue=%.1f lang=%s",
                     (t_wh1 - t_wh0) * 1000.0,
                     (t_wh1 - t_dequeue) * 1000.0,
+                    transcript.language or "?",
                 )
         except Exception as exc:
             self._emit({"type": "error", "stage": "whisper", "message": str(exc)})
@@ -826,24 +799,23 @@ class VoiceSession:
         finally:
             wav_path.unlink(missing_ok=True)
 
-        cleaned = text.strip()
+        cleaned = transcript.text.strip()
         if not cleaned:
             self._emit({"type": "status_text", "text": "listening…"})
             return
-        if looks_non_english(cleaned):
-            self._emit(
-                {
-                    "type": "error",
-                    "stage": "language",
-                    "message": "English-only mode: please repeat that in English.",
-                }
-            )
-            self._emit({"type": "status_text", "text": "listening…"})
-            return
+        # CONCEPT: trust Whisper when it ran in auto mode; otherwise fall back to text detection.
+        # Hindi spoken in transliteration ("kya haal hai") usually arrives as Latin letters that
+        # Whisper labels "en"; that's fine — we still won't crash, and the user can switch to
+        # Devanagari script if they want HER to mirror Hindi.
+        if transcript.detected and transcript.language:
+            lang_code = transcript.language
+        else:
+            lang_code = detect_text_language(cleaned)
         if convo_log:
-            logger.info("heard_user %s", cleaned.replace("\n", " ").strip())
-        self._emit({"type": "user_transcript", "text": cleaned})
+            logger.info("heard_user lang=%s %s", lang_code, cleaned.replace("\n", " ").strip())
+        self._emit({"type": "user_transcript", "text": cleaned, "lang": lang_code})
         self._messages.append({"role": "user", "content": cleaned})
+        self._apply_turn_context(cleaned, lang_code)
         self._emit({"type": "assistant_reset"})
         try:
             if timing_enabled:
@@ -852,7 +824,16 @@ class VoiceSession:
                     (time.monotonic() - t_dequeue) * 1000.0,
                 )
             self._emit({"type": "status_text", "text": "thinking…"})
-            self._stream_reply(synth)
+            reply = self._stream_reply(synth)
+            if reply:
+                self._mempalace.record_turn(
+                    self._session_key,
+                    self._turn_index,
+                    cleaned,
+                    reply,
+                    self._halt,
+                )
+                self._turn_index += 1
         except Exception as exc:
             logger.exception("assistant pipeline failed")
             self._emit({"type": "error", "stage": "llm", "message": str(exc)})
@@ -865,11 +846,25 @@ class VoiceSession:
         self._interrupt.clear()
         self._emit({"type": "assistant_reset"})
         convo_log = bool(self._settings.get("convo_log", False))
+        mem = self._mempalace.context_for_query(
+            "What have we discussed before with the user?",
+            self._user_label,
+            self._halt,
+        )
+        # The opener always speaks English: we have no signal yet about the user's language.
+        self._current_lang = DEFAULT_LANG
+        opener_system = (
+            SYSTEM_PROMPT.replace("User", self._user_label)
+            + "\n\n## Language for this turn\n"
+            + _language_directive(DEFAULT_LANG)
+            + " Speak first when the session begins."
+        )
+        if mem:
+            opener_system += "\n\n## Memory (MemPalace — local)\n" + mem
         opener_messages: list[dict[str, str]] = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT.replace("User", self._user_label)
-                + " Speak first when the session begins.",
+                "content": opener_system,
             },
             {
                 "role": "user",
@@ -881,20 +876,29 @@ class VoiceSession:
                 ),
             },
         ]
-        trimmed = self._stream_text_and_speak(opener_messages, synth)
+        trimmed = self._stream_text_and_speak(opener_messages, synth, DEFAULT_LANG)
         if trimmed:
             if convo_log:
                 logger.info("replied_assistant %s", trimmed.replace("\n", " ").strip())
             self._messages.append({"role": "assistant", "content": trimmed})
 
-    def _stream_text_and_speak(self, messages: list[dict[str, Any]], synth: Synthesizer) -> str:
+    def _stream_text_and_speak(
+        self,
+        messages: list[dict[str, Any]],
+        synth: Synthesizer,
+        lang_code: str | None = None,
+    ) -> str:
         """
         Keep the LLM stream moving while TTS plays queued sentence chunks.
 
         CONCEPT: This is a producer/consumer pattern. The producer thread keeps reading
         model tokens and queueing complete sentences; the voice thread consumes that queue
         for playback so audio does not pause the text stream.
+
+        `lang_code` (ISO 639-1) tells the TTS which voice/engine to use. None falls back to
+        whatever turn is currently active (`self._current_lang`).
         """
+        active_lang = lang_code or self._current_lang or DEFAULT_LANG
         full_parts: list[str] = []
         sentence_queue: queue.Queue[str | None] = queue.Queue()
         error_queue: queue.Queue[Exception] = queue.Queue(maxsize=1)
@@ -936,7 +940,7 @@ class VoiceSession:
                 continue
             if sentence is None:
                 break
-            self._synthesize_sentence(sentence, synth)
+            self._synthesize_sentence(sentence, synth, active_lang)
 
         if self._turn_stop.is_set() or self._halt.is_set():
             producer.join(timeout=2.0)
@@ -948,17 +952,18 @@ class VoiceSession:
             pass
         return "".join(full_parts).strip()
 
-    def _stream_reply(self, synth: Synthesizer) -> None:
+    def _stream_reply(self, synth: Synthesizer) -> str:
         """Stream token deltas to the UI while speaking completed sentences aloud."""
         convo_log = bool(self._settings.get("convo_log", False))
-        trimmed = self._stream_text_and_speak(self._messages, synth)
+        trimmed = self._stream_text_and_speak(self._messages, synth, self._current_lang)
         if trimmed:
             if convo_log:
                 logger.info("replied_assistant %s", trimmed.replace("\n", " ").strip())
             self._messages.append({"role": "assistant", "content": trimmed})
+        return trimmed
 
-    def _synthesize_sentence(self, sentence: str, synth: Synthesizer) -> None:
-        """Synthesize one chunk; respects barge-in and global shutdown flags."""
+    def _synthesize_sentence(self, sentence: str, synth: Synthesizer, lang_code: str) -> None:
+        """Synthesize one chunk in `lang_code`; respects barge-in and global shutdown flags."""
         if self._turn_stop.is_set():
             return
         # Refresh per-sentence TTS levels so UI volume changes take effect mid-reply.
@@ -975,9 +980,9 @@ class VoiceSession:
         # Timestamp used by the mic callback to apply a short barge-in grace window.
         self._last_speak_start = time.monotonic()
         speaking = threading.Event()
-        self._emit({"type": "her_speaking", "active": True})
+        self._emit({"type": "her_speaking", "active": True, "lang": lang_code})
         try:
-            samples, sr = synth.synth_to_array(sentence)
+            samples, sr = synth.synth_to_array(sentence, lang_code)
             if samples.size == 0:
                 return
             synth.play(samples, sr, self._interrupt, speaking)

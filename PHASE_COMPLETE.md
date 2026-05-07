@@ -2,11 +2,27 @@
 
 ## What Phase 1 delivered
 
-- `backend/voice/session.py` `VoiceSession`: 16 kHz capture, `silero-vad-lite` with barge-in, `whisper.cpp` **English-only STT** (`-l en`), Ollama `qwen2.5:7b` **streaming** to the UI, **Kokoro** English-only TTS, plus a non-English guard (blocks non-English transcripts and asks to repeat in English).
+- `backend/voice/session.py` `VoiceSession`: 16 kHz capture, `silero-vad-lite` with barge-in, `whisper.cpp` STT, Ollama `qwen2.5:7b` **streaming** to the UI, **Kokoro** TTS.
 - `backend/main.py` spawns one **daemon** voice thread per WebSocket client; JSON event types: `voice_ready`, `user_transcript`, `assistant_reset`, `assistant_delta`, `her_speaking`, `error`.
 - `frontend/`: user bubbles (right), HER (left) with live token deltas, bottom **waveform** when `her_speaking` is active.
 - `scripts/download_voice_models.sh` for Kokoro weights; optional `scripts/download_whisper_medium.sh` for whisper.cpp medium weights; `setup.sh` now prefers **Python 3.12**, reuses venv, runs Kokoro download, and ensures the Tauri **RGBA** icon exists.
 - On-screen name is hardcoded **User** (per Phase 1 spec) for system-prompt testing.
+
+## What Phase 1.5 delivered (multilingual)
+
+- **STT**: `whisper.cpp` runs with `-l auto` by default; `backend/voice/transcriber.py` parses Whisper's `auto-detected language: xx` from stderr and returns a `Transcript(text, language, detected)` to the session.
+- **Text routing**: `backend/voice/lang_routing.py` uses [`lingua-language-detector`](https://github.com/pemistahl/lingua-py) (offline, ~170 MB n-gram models) for typed input; sticky to English on short / ambiguous text so utterances like "sure" or "i am good" never flip away from English.
+- **TTS**: `backend/voice/synthesizer.py` now picks a Kokoro voice for the detected language (en, es, fr, it, pt, hi, ja, zh) and shells out to macOS `say` for the rest (de, ru, ko, ar, nl, tr, pl, sv). Kokoro failures are blacklisted per voice/lang at runtime, so subsequent turns skip straight to `say`.
+- **Prompt mirroring**: the system prompt now contains a per-turn `## Language for this turn` block telling the LLM to mirror the user's language. The "English-only" error gate is removed — language is a routing signal, never a blocker.
+- **WebSocket**: `user_transcript` and `her_speaking` events now include a `lang` field for the UI to surface the detected language.
+
+## What Phase 2 delivered
+
+- **[MemPalace](https://github.com/MemPalace/mempalace)** as **local-first** long-term memory: verbatim turn files under `data/mempalace/her_turns/`, Chroma semantic search, wake-up context from `data/mempalace/identity.txt`.
+- `backend/memory/mempalace_adapter.py`: ingest after each user+assistant turn; retrieve before each model call; env toggles documented in `ENVIRONMENT.md`.
+- `backend/voice/session.py`: injects a bounded **MemPalace** block into the system prompt; records exchanges with a stable per-session key.
+- `backend/main.py`: WebSocket `{"type":"memory_status"}` returns JSON status (drawer counts, paths).
+- `scripts/her_memory_status.sh`: prints the same status without opening the app (requires venv + `PYTHONPATH`).
 
 ## What Phase 0 delivered (foundation)
 
@@ -75,39 +91,94 @@ Whisper not found → run: `which whisper-cli` (should show a path)
 
 No sound output → check: `python3 -c "import sounddevice; print(sounddevice.query_devices())"`
 
-Pass condition: full conversation, clean interruption, English-only (non-English is rejected with a prompt to repeat in English).
+Pass condition: full conversation, clean interruption.
 
 ---
 
-PHASE 2 — Memory
+PHASE 1.5 — Multilingual mirroring
 
-What to test: HER remembers across sessions.
+What to test: HER detects the language each turn and replies in it (Kokoro when supported, macOS `say` fallback otherwise). The old "English-only" error must NOT appear.
 
 Steps:
 
 ```
-Start app. Say: "My favourite food is biryani and I hate mornings."
-Say: "Remember that." Close app completely.
-Reopen app. Say: "What do you know about my food preferences?"
+cargo tauri dev   (from src-tauri)
+
+# 1. Start in English: "Tell me a fun fact about octopuses."
+#    → English transcript, English reply, Kokoro voice.
+
+# 2. Switch to French: "Salut, comment vas-tu aujourd'hui ?"
+#    → user_transcript shows lang="fr", HER replies in French (Kokoro `ff_siwis`).
+
+# 3. Try a Kokoro-less language — German: "Erzähl mir einen Witz auf Deutsch."
+#    → lang="de", HER speaks via macOS `say -v Anna`.
+
+# 4. Type (don't speak) "i am good" or "sure" in the chat bar.
+#    → No "English-only" error. HER replies in English.
+
+# 5. Type a non-Latin sentence: "मैं ठीक हूँ धन्यवाद"
+#    → lang="hi", Kokoro Hindi voice (`hf_alpha`).
 ```
 
 What you should see:
 
-HER mentions biryani without being told again.
-
-SQLite personality snapshot updated (verify):
-
-```
-sqlite3 her/data/profile.db "SELECT * FROM personality_traits;"
-```
+- No `error` event with `stage: "language"` ever.
+- `user_transcript` events include a `lang` field.
+- Backend logs (with `HER_VOICE_TIMING_LOG=1`): `voice_timing stage=whisper_done … lang=fr` and similar.
 
 Most likely failure:
 
-ChromaDB collection not persisting → check: `her/data/chroma/` folder exists and has files
+`say` voice not installed (e.g. on a stripped-down macOS) → HER uses the system default voice automatically; check `say -v ?` for available voices.
 
-Memory not retrieved → check chroma_store.py query threshold (lower if needed)
+Kokoro phonemizer crashes on a language → that voice/lang pair is added to a session-level blacklist and subsequent calls fall through to `say`.
 
-Pass condition: biryani recalled correctly after full app restart.
+Pass condition: HER mirrors EN, FR, DE, HI in one session without errors.
+
+---
+
+PHASE 2 — Memory (MemPalace)
+
+What to test: HER remembers across sessions using **MemPalace** (local Chroma + turn files).
+
+Steps:
+
+```
+cd her
+bash setup.sh
+cargo tauri dev   (from src-tauri)
+
+# In the app: say "My favourite food is biryani and I hate mornings."
+# Have HER reply, then quit the app completely.
+
+# Optional — inspect memory without the UI:
+bash scripts/her_memory_status.sh
+
+# Relaunch: cargo tauri dev
+# Say: "What do you know about my food preferences?"
+```
+
+What you should see:
+
+HER mentions **biryani** (or your wording) without you repeating the fact.
+
+On disk (paths relative to repo; respect `HER_DATA_DIR` if set):
+
+```
+ls data/mempalace/her_turns/
+ls data/mempalace/chroma* 2>/dev/null || ls data/mempalace/
+```
+
+Chroma persists SQLite under the palace directory (layout may include a `chroma/` folder depending on MemPalace/Chroma version).
+
+Most likely failure:
+
+First-time embedding download blocked → ensure `~/.cache/chroma/onnx_models/` is writable (see `ENVIRONMENT.md`).
+
+`HER_MEMPALACE_ENABLED=0` → memory disabled; unset or set to `1`.
+
+Pass condition: biryani recalled correctly after **full app restart**.
+
+**Wipe memory (audit / fresh start):** quit the app, then `rm -rf data/mempalace` (or only `data/mempalace/her_turns` + chroma subfolder if you know the layout). Re-run the scenario.
 
 ---
 

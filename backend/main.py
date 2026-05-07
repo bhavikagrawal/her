@@ -1,9 +1,9 @@
-# Starts HER's Python sidecar: WebSocket control plus Phase 1 full-duplex voice conversation.
+# Starts HER's Python sidecar: WebSocket control plus full-duplex voice + MemPalace memory hooks.
 # Each browser socket spins up a `VoiceSession` thread that chains mic → Whisper → Qwen → TTS.
 # Tauri still launches this file through `scripts/run-backend.sh` before the desktop window opens.
 # `generate_context!()` stays outside Python — Rust owns menus/icons while Python owns time-domain audio.
 
-"""WebSocket entry point for the HER desktop app (Phase 1 — voice + streaming chat)."""
+"""WebSocket entry point for the HER desktop app (voice, streaming chat, memory_status)."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from websockets import server
 from websockets.legacy.server import WebSocketServerProtocol
 from websockets.typing import Data
 
+from backend.memory.mempalace_adapter import status_dict as mempalace_status_dict
 from backend.voice.session import VoiceSession
 
 # CONCEPT: The type we use is the object the `websockets` library hands your handler (a "connection").
@@ -103,6 +104,11 @@ async def handle_client(
                 continue
             if payload.get("type") == "set_settings":
                 session.enqueue_control(payload)
+                continue
+            if payload.get("type") == "memory_status":
+                await connection.send(
+                    json.dumps({"type": "memory_status", "payload": mempalace_status_dict()})
+                )
                 continue
             if payload.get("type") == "user_text":
                 session.enqueue_control(payload)

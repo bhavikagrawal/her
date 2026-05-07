@@ -8,4 +8,5 @@ httpx>=0.27.0
 onnxruntime>=1.19.2
 kokoro-onnx>=0.4.9
 silero-vad-lite>=0.2.1
-langdetect>=1.0.9
+lingua-language-detector>=2.0.2
+mempalace>=3.3.4
