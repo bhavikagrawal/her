@@ -120,6 +120,13 @@
   - **What**: Override where HER stores models and temp audio.
   - **Example**: `export HER_DATA_DIR="$HOME/Library/Application Support/HER"`
 
+## Profile (Phase 3 — onboarding)
+
+- **`<HER_DATA_DIR>/profile.json`** (default: `<repo>/data/profile.json`)
+  - **What**: Single-user onboarding (`name`, `gender`, `city`; spoken language defaults to **English** / ISO `en` in `profile.json`), plus optional offline **`location`** `{country, region, confident}` resolved by the local LLM when you submit the form.
+  - **Wipe first launch**: `rm -f data/profile.json` (from repo root, or under `HER_DATA_DIR`).
+  - **Note**: Not environment-variable gated — path follows `HER_DATA_DIR` only.
+
 ## MemPalace (Phase 2 — long-term memory)
 
 - **`HER_MEMPALACE_ENABLED`** (default: `1`)

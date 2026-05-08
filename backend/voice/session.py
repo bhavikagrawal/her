@@ -1,9 +1,7 @@
 # Orchestrates voice: microphone chunks → Silero gate → Whisper → MemPalace context → Qwen → Kokoro.
-# Runs in a dedicated worker thread so asyncio WebSockets stay responsive while audio blocks.
-# Two threading.Events enforce the workspace vows: global halt plus user “barge-in” during playback.
-# Language flow (Phase 1.5): Whisper auto-detects voice; Lingua-py classifies typed text; the
-#   ISO code is mirrored into the system prompt and routed to Kokoro/`say` so HER replies
-#   in the user's language without ever blocking on a "language" error.
+# Runs in a dedicated worker thread; asyncio stays responsive while Silero/Whisper/Ollama block.
+# Phase 3 queues onboarding via WebSocket until `profile.json` is filled; events gate barge-in + halt.
+# Phase 1.5 multilingual path: Whisper/Lingua pick ISO codes → Kokoro/`say`; MemPalace augments system prompt.
 
 """Voice conversation loop used while the desktop WebSocket session is alive."""
 
@@ -31,6 +29,15 @@ from websockets.legacy.server import WebSocketServerProtocol
 
 from backend.her_paths import temp_audio_dir
 from backend.memory.mempalace_adapter import HerMemPalace
+from backend.onboarding.greeting import first_greeting_messages
+from backend.onboarding.location import resolve_city
+from backend.onboarding.profile import (
+    Profile,
+    is_first_launch,
+    load_profile,
+    profile_from_onboarding_values,
+    save_profile,
+)
 from backend.ollama_client import DEFAULT_MODEL, stream_chat
 from backend.voice.constants import (
     BARGE_IN_SPEECH_FRAMES,
@@ -132,9 +139,15 @@ class VoiceSession:
         self._loop = loop
         self._connection = connection
         self._halt = halt
-        self._user_label = user_label
+        self._profile: Profile | None = load_profile()
+        if self._profile and self._profile.name.strip():
+            self._user_label = self._profile.name.strip()
+        else:
+            self._user_label = user_label
+        self._await_onboarding: bool = is_first_launch()
+        base_system = SYSTEM_PROMPT.replace("User", self._user_label)
         self._messages: list[dict[str, str]] = [
-            {"role": "system", "content": SYSTEM_PROMPT.replace("User", user_label)},
+            {"role": "system", "content": base_system + self._profile_system_extra()},
         ]
         self._interrupt = threading.Event()
         self._turn_stop: threading.Event = threading.Event()
@@ -158,13 +171,48 @@ class VoiceSession:
         # ISO 639-1 code chosen for the *current* turn. Refreshed by `_apply_turn_context`.
         self._current_lang: str = DEFAULT_LANG
 
+    def _profile_system_extra(self) -> str:
+        """Rich profile facts injected into the system prompt after setup completes."""
+        p = self._profile
+        if p is None or not p.setup_complete:
+            return ""
+        lines = [
+            "",
+            "## User profile",
+            f"The user's name is {p.name}. Address them naturally.",
+            f"Pronouns / gender expression: {p.gender}.",
+            f"They typed their city as: {p.city}.",
+            f"Preferred spoken language (profile): {p.preferred_language or 'English'} "
+            f"(code {p.preferred_language_code or 'en'}).",
+        ]
+        loc = p.location
+        if loc is not None and (loc.country or loc.region):
+            lines.append(
+                f"Offline guess where that city is: {loc.region}, {loc.country} "
+                f"(confident={loc.confident}). If confident=false, ask gently which place they mean."
+            )
+        return "\n".join(lines)
+
+    def _preferred_lang_code(self) -> str:
+        """ISO code from onboarding (explicit code beats fuzzy language label)."""
+        if self._profile and self._profile.setup_complete:
+            raw = (self._profile.preferred_language_code or "").strip().lower()
+            if raw and len(raw) >= 2:
+                base = raw.split("-")[0][:2]
+                return profile_for(base).code
+            hint = (self._profile.preferred_language or "").strip()
+            if hint:
+                return detect_text_language(hint)
+        return DEFAULT_LANG
+
     def _apply_turn_context(self, user_line: str, lang_code: str) -> None:
         """Refresh the system prompt with MemPalace memory + language directive for this turn."""
         self._current_lang = lang_code or DEFAULT_LANG
         block = self._mempalace.context_for_query(user_line, self._user_label, self._halt)
         base = SYSTEM_PROMPT.replace("User", self._user_label)
+        profile_x = self._profile_system_extra()
         directive = _language_directive(self._current_lang)
-        content = f"{base}\n\n## Language for this turn\n{directive}"
+        content = f"{base}{profile_x}\n\n## Language for this turn\n{directive}"
         if block:
             content += "\n\n## Memory (MemPalace — local)\n" + block
         if self._messages and self._messages[0].get("role") == "system":
@@ -348,6 +396,15 @@ class VoiceSession:
                 "selected_output": self._output_device,
             }
         )
+        if not inputs:
+            logger.warning("PortAudio reported zero input devices — mic capture may fail.")
+            self._emit(
+                {
+                    "type": "error",
+                    "stage": "audio_devices",
+                    "message": "No microphone inputs found. macOS: grant Microphone access to Terminal or the app running Python.",
+                }
+            )
 
     async def _send_raw(self, line: str) -> None:
         await self._connection.send(line)
@@ -396,6 +453,41 @@ class VoiceSession:
         self._emit_audio_devices()
         self._emit_settings_schema()
 
+        # Pre-warm the slowest "first turn" components (LLM model load + first Kokoro synthesis)
+        # so the session opener / first reply doesn't pay the cold-start penalty.
+        #
+        # CONCEPT: warm-ups are best-effort and must never block the mic loop. We run them in a
+        # background thread and ignore failures (the real request will still succeed, just slower).
+        def prewarm_background() -> None:
+            try:
+                t0 = time.monotonic()
+                combo = _CombinedStop(self._halt, self._turn_stop)
+                warm_msgs: list[dict[str, str]] = [
+                    {"role": "system", "content": "Reply in natural spoken English. Reply with a single word."},
+                    {"role": "user", "content": "Ready?"},
+                ]
+                # Drain one tiny stream to force Ollama to load the model.
+                for _ in stream_chat(warm_msgs, combo, model=DEFAULT_MODEL):
+                    if self._halt.is_set():
+                        return
+                    break
+                t1 = time.monotonic()
+                # Force Kokoro to do one tiny synthesis (no playback).
+                _samples, _sr = synth.synth_to_array("Okay.", DEFAULT_LANG)
+                t2 = time.monotonic()
+                if bool(self._settings.get("voice_timing_log", False)):
+                    logger.info(
+                        "voice_timing stage=prewarm_done llm_ms=%.1f tts_ms=%.1f total_ms=%.1f",
+                        (t1 - t0) * 1000.0,
+                        (t2 - t1) * 1000.0,
+                        (t2 - t0) * 1000.0,
+                    )
+            except Exception:
+                # Best effort only.
+                return
+
+        threading.Thread(target=prewarm_background, name="her-prewarm", daemon=True).start()
+
         def drain_utterances() -> int:
             """Drop any queued audio chunks (prevents stale turns after restarts)."""
             dropped = 0
@@ -408,12 +500,22 @@ class VoiceSession:
                     dropped += 1
 
         def drain_controls() -> None:
+            nonlocal opener_spoken
             while True:
                 try:
                     msg = self._control_queue.get_nowait()
                 except queue.Empty:
                     return
                 msg_type = msg.get("type")
+                if msg_type == "onboarding_complete":
+                    raw_vals = msg.get("values")
+                    if isinstance(raw_vals, dict):
+                        cleaned = self._validate_onboarding_values(raw_vals)
+                        if cleaned is not None:
+                            with contextlib.suppress(Exception):
+                                self._complete_onboarding(cleaned, synth)
+                            opener_spoken = True
+                    continue
                 if msg_type == "user_text":
                     raw = msg.get("text")
                     if isinstance(raw, str):
@@ -658,8 +760,9 @@ class VoiceSession:
             try:
                 with stream:
                     self._emit({"type": "voice_ready"})
-                    if not opener_spoken:
-                        # HER speaks first on session start (Phase 1: no memory yet, just warmth + presence).
+                    if not opener_spoken and not self._await_onboarding:
+                        # HER speaks first on session start (returning users) once MemPalace + profile are ready.
+                        # First-time users finish onboarding in the UI first; `_complete_onboarding` speaks then.
                         # CONCEPT: We generate an opener via the same local LLM stream we use for replies,
                         # then speak it sentence-by-sentence so the UI and audio stay in sync.
                         with contextlib.suppress(Exception):
@@ -840,6 +943,62 @@ class VoiceSession:
         finally:
             self._emit({"type": "status_text", "text": "listening…"})
 
+    def _validate_onboarding_values(self, values: dict[str, Any]) -> dict[str, Any] | None:
+        """Ensure onboarding payloads contain name, gender, and city (English is applied server-side)."""
+        keys = ("name", "gender", "city")
+        out: dict[str, Any] = {}
+        for key in keys:
+            raw = values.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                return None
+            out[key] = raw.strip()
+        return out
+
+    def _sync_static_system_header(self) -> None:
+        """Refresh system message with profile facts before the next turn."""
+        base = SYSTEM_PROMPT.replace("User", self._user_label)
+        content = base + self._profile_system_extra()
+        if self._messages and self._messages[0].get("role") == "system":
+            self._messages[0] = {"role": "system", "content": content}
+
+    def _complete_onboarding(self, values: dict[str, Any], synth: Synthesizer) -> None:
+        """Persist onboarding answers, resolve city offline, then speak the first greeting."""
+        profile = profile_from_onboarding_values(values)
+        profile.location = resolve_city(profile.city, self._halt)
+        save_profile(profile)
+        self._profile = profile
+        self._user_label = profile.name
+        self._sync_static_system_header()
+        loc_payload: dict[str, Any] | None = None
+        if profile.location is not None:
+            loc = profile.location
+            loc_payload = {
+                "country": loc.country,
+                "region": loc.region,
+                "confident": loc.confident,
+            }
+        self._emit({"type": "onboarding_resolved", "location": loc_payload})
+        self._await_onboarding = False
+        self._finish_first_greeting(synth)
+
+    def _finish_first_greeting(self, synth: Synthesizer) -> None:
+        """Stream + speak the post-onboarding greeting (same pipeline as normal replies)."""
+        if self._profile is None:
+            return
+        convo_log = bool(self._settings.get("convo_log", False))
+        self._turn_stop = threading.Event()
+        self._interrupt.clear()
+        self._emit({"type": "assistant_reset"})
+        lang = self._preferred_lang_code()
+        self._current_lang = lang
+        base = SYSTEM_PROMPT.replace("User", self._user_label)
+        msgs = first_greeting_messages(self._profile, base)
+        trimmed = self._stream_text_and_speak(msgs, synth, lang)
+        if trimmed:
+            if convo_log:
+                logger.info("first_greeting %s", trimmed.replace("\n", " ").strip())
+            self._messages.append({"role": "assistant", "content": trimmed})
+
     def _speak_session_opener(self, synth: Synthesizer) -> None:
         """Generate + speak a short opener as soon as the app connects."""
         self._turn_stop = threading.Event()
@@ -851,12 +1010,13 @@ class VoiceSession:
             self._user_label,
             self._halt,
         )
-        # The opener always speaks English: we have no signal yet about the user's language.
-        self._current_lang = DEFAULT_LANG
+        lang_open = self._preferred_lang_code()
+        self._current_lang = lang_open
         opener_system = (
             SYSTEM_PROMPT.replace("User", self._user_label)
+            + self._profile_system_extra()
             + "\n\n## Language for this turn\n"
-            + _language_directive(DEFAULT_LANG)
+            + _language_directive(lang_open)
             + " Speak first when the session begins."
         )
         if mem:
@@ -876,7 +1036,7 @@ class VoiceSession:
                 ),
             },
         ]
-        trimmed = self._stream_text_and_speak(opener_messages, synth, DEFAULT_LANG)
+        trimmed = self._stream_text_and_speak(opener_messages, synth, lang_open)
         if trimmed:
             if convo_log:
                 logger.info("replied_assistant %s", trimmed.replace("\n", " ").strip())

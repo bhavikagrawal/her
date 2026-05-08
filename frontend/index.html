@@ -1,9 +1,8 @@
 <!DOCTYPE html>
 <!--
-  HER web surface: connection health, chat transcript, and a waveform when SHE is speaking.
-  Phase 1 uses only the CHAT view — onboarding / greeting layers come in a later milestone.
-  The static layout keeps Node bundlers optional so Python learners can focus on backend flow.
-  System fonts + the dark palette mirror the spec’s cinematic, minimal tone (#0a0a0a canvas).
+  HER web surface: onboarding overlay (first launch), chat transcript, waveform when SHE speaks.
+  Phase 3 adds sequential fade-in fields + fade-to-black before the first spoken greeting.
+  Static HTML keeps Node bundlers optional; Python owns voice + profile persistence under data/.
 -->
 <html lang="en">
   <head>
@@ -92,8 +91,35 @@
           >
           <select id="audio-output" class="audio-controls__select"></select>
         </div>
-        <p class="phase-hint">Phase 1 — voice loop (name: User)</p>
+        <p class="phase-hint">Phase 3 — onboarding + voice</p>
       </header>
+      <div
+        id="onboarding-overlay"
+        class="onboarding-overlay"
+        hidden
+        aria-hidden="true"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Set up HER"
+      >
+        <div class="onboarding-scrim" aria-hidden="true"></div>
+        <div class="onboarding-field-wrap">
+          <label id="onboarding-label" class="onboarding-label" for="onboarding-input"
+            >…</label
+          >
+          <div id="onboarding-input-wrap" class="onboarding-input-wrap">
+            <input
+              id="onboarding-input"
+              class="onboarding-input"
+              type="text"
+              name="onboarding-field"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <div id="onboarding-buttons" class="onboarding-buttons" hidden></div>
+        </div>
+      </div>
       <main id="chat-main" class="chat-main">
         <div id="chat-stream" class="chat-stream"></div>
       </main>

@@ -1,8 +1,8 @@
 /*
-  WebSocket driver for HER: paints chat bubbles + typing stream + waveform when SHE speaks aloud.
-  The Python side owns audio; we only mirror transcript + lightweight “she is speaking” cues.
-  Each `assistant_reset` begins a fresh left bubble so partial tokens do not collide with prior turns.
-  Plain JS keeps dependencies at zero — you can introduce Vite/React later without rewriting protocols.
+  WebSocket driver for HER: chat bubbles, first-run onboarding overlay, waveform during TTS.
+  Python owns capture + synthesis; we map JSON events to DOM (including sequential onboarding steps).
+  Each `assistant_reset` starts a fresh HER bubble so streamed tokens never collide across turns.
+  Plain JS keeps installs dependency-free until you opt into a bundler later.
 */
 
 (() => {
@@ -24,7 +24,155 @@
   const chatInput = document.getElementById("chat-input");
   const chatSend = document.getElementById("chat-send");
   const chatClose = document.getElementById("chat-close");
+  const onboardingOverlay = document.getElementById("onboarding-overlay");
+  const onboardingLabel = document.getElementById("onboarding-label");
+  const onboardingInputWrap = document.getElementById("onboarding-input-wrap");
+  const onboardingInput = document.getElementById("onboarding-input");
+  const onboardingButtons = document.getElementById("onboarding-buttons");
   // Settings live in a separate window (`settings.html`).
+
+  /**
+   * HER defaults to English for voice + prompts; onboarding does not ask (other languages still mirror per turn).
+   * @type {Array<{ field: string, kind: 'text'|'choice', label: string, options?: Array<{ value: string, label: string }> }>}
+   */
+  const ONBOARDING_STEPS = [
+    { field: "name", kind: "text", label: "What should I call you?" },
+    {
+      field: "gender",
+      kind: "choice",
+      label: "How should I refer to you?",
+      options: [
+        { value: "Male", label: "Male" },
+        { value: "Female", label: "Female" },
+        { value: "Non-binary", label: "Non-binary" },
+        { value: "Prefer not to say", label: "Prefer not to say" },
+      ],
+    },
+    { field: "city", kind: "text", label: "Which city are you in?" },
+  ];
+
+  let onboardingStep = 0;
+  /** @type {Record<string, string>} */
+  let onboardingValues = {};
+  let onboardingAwaitReveal = false;
+
+  function clearOnboardingButtons() {
+    if (!onboardingButtons) return;
+    onboardingButtons.innerHTML = "";
+    onboardingButtons.hidden = true;
+  }
+
+  function advanceOnboarding() {
+    onboardingStep += 1;
+    if (onboardingStep >= ONBOARDING_STEPS.length) {
+      submitOnboarding();
+      return;
+    }
+    showOnboardingStep(onboardingStep);
+  }
+
+  function submitOnboarding() {
+    if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) return;
+    liveSocket.send(
+      JSON.stringify({
+        type: "onboarding_complete",
+        values: {
+          name: onboardingValues.name,
+          gender: onboardingValues.gender,
+          city: onboardingValues.city,
+        },
+      }),
+    );
+    onboardingAwaitReveal = true;
+    fadeOverlayToBlack();
+  }
+
+  function renderChoiceButtons(step) {
+    if (!onboardingButtons || !step.options) return;
+    onboardingButtons.hidden = false;
+    onboardingButtons.innerHTML = "";
+    for (const opt of step.options) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "onboarding-choice-btn";
+      btn.textContent = opt.label;
+      btn.addEventListener("click", () => {
+        if (step.field === "gender") {
+          onboardingValues.gender = opt.value;
+          advanceOnboarding();
+        }
+      });
+      onboardingButtons.appendChild(btn);
+    }
+  }
+
+  function showOnboardingStep(index) {
+    if (!onboardingLabel || !onboardingInput || !onboardingOverlay) return;
+    const step = ONBOARDING_STEPS[index];
+    if (!step) return;
+    onboardingOverlay.classList.remove("is-step-visible");
+    clearOnboardingButtons();
+    window.requestAnimationFrame(() => {
+      onboardingLabel.textContent = step.label;
+      if (step.kind === "text") {
+        if (onboardingInputWrap) onboardingInputWrap.hidden = false;
+        onboardingInput.placeholder = "";
+        onboardingInput.value = onboardingValues[step.field] || "";
+        onboardingOverlay.classList.add("is-step-visible");
+        onboardingInput.focus();
+      } else if (step.kind === "choice") {
+        if (onboardingInputWrap) onboardingInputWrap.hidden = true;
+        renderChoiceButtons(step);
+        onboardingOverlay.classList.add("is-step-visible");
+      }
+    });
+  }
+
+  function openOnboarding() {
+    if (!onboardingOverlay) return;
+    onboardingOverlay.classList.remove("is-black", "is-reveal");
+    onboardingOverlay.hidden = false;
+    onboardingOverlay.setAttribute("aria-hidden", "false");
+    onboardingOverlay.classList.add("is-active");
+    onboardingStep = 0;
+    onboardingValues = {};
+    showOnboardingStep(0);
+  }
+
+  function fadeOverlayToBlack() {
+    if (!onboardingOverlay) return;
+    onboardingOverlay.classList.remove("is-step-visible");
+    onboardingOverlay.classList.add("is-black");
+  }
+
+  function revealOverlayAfterSpeaking() {
+    if (!onboardingOverlay) return;
+    onboardingOverlay.classList.remove("is-black", "is-active");
+    onboardingOverlay.classList.add("is-reveal");
+    window.setTimeout(() => {
+      onboardingOverlay.hidden = true;
+      onboardingOverlay.setAttribute("aria-hidden", "true");
+      onboardingOverlay.classList.remove("is-reveal");
+    }, 1250);
+  }
+
+  function bindOnboardingKeys() {
+    if (!onboardingInput) return;
+    onboardingInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) return;
+      const step = ONBOARDING_STEPS[onboardingStep];
+      if (!step) return;
+
+      if (step.kind !== "text") return;
+
+      const val = String(onboardingInput.value || "").trim();
+      if (!val) return;
+      onboardingValues[step.field] = val;
+      advanceOnboarding();
+    });
+  }
 
   const MIC_ON_SVG = `
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -275,7 +423,9 @@
 
   function maybeShowAudioControls(inputs, outputs) {
     if (!audioControls) return;
-    const show = (inputs && inputs.length > 1) || (outputs && outputs.length > 1);
+    const nIn = inputs && inputs.length ? inputs.length : 0;
+    const nOut = outputs && outputs.length ? outputs.length : 0;
+    const show = nIn >= 1 || nOut >= 1;
     audioControls.classList.toggle("audio-controls--hidden", !show);
   }
 
@@ -489,6 +639,12 @@
           setStatus(true, "connected");
           return;
         }
+        if (payload.type === "onboarding_status") {
+          if (payload.first_launch) {
+            openOnboarding();
+          }
+          return;
+        }
         if (payload.type === "voice_ready") {
           setStatus(true, "listening…");
           setMicMeterActive(true);
@@ -515,6 +671,10 @@
         if (payload.type === "her_speaking") {
           isHerSpeaking = Boolean(payload.active);
           setHerSpeaking(isHerSpeaking);
+          if (payload.active && onboardingAwaitReveal) {
+            onboardingAwaitReveal = false;
+            revealOverlayAfterSpeaking();
+          }
           // Hide mic meter while speaking to reduce “why is it moving?” confusion.
           setMicMeterActive(micMeterEnabled && !isHerSpeaking);
           return;
@@ -592,5 +752,8 @@
   }
 
   ensureWaveformBars();
-  window.addEventListener("DOMContentLoaded", connect);
+  window.addEventListener("DOMContentLoaded", () => {
+    bindOnboardingKeys();
+    connect();
+  });
 })();

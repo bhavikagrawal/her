@@ -1,8 +1,149 @@
 /*
-  Styles for the fullscreen onboarding flow (fade-in fields, cinematic spacing).
-  Phase 0 loads this file early so future markup can attach without rearranging `<head>` tags.
-  The stylesheet is intentionally small now; it only shares color tokens via the main chat sheet.
-  Separating onboarding from chat CSS keeps animation rules from fighting bubble layout later.
+  Fullscreen first-run onboarding: one field at a time, slow fades, then black before HER speaks.
+  The overlay sits above chat (z-index) so the main voice UI stays mounted but inert until setup finishes.
+  Transitions use opacity + visibility so screen readers can ignore hidden layers once complete.
+  Field step timing is controlled in app.js; CSS only provides the “stage” look (letter-spacing, glow).
 */
 
-/* Placeholder: onboarding layout hooks will attach to `.onboarding-*` classes in later work. */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.8s ease,
+    visibility 0s linear 0.8s;
+}
+
+.onboarding-overlay.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.55s ease,
+    visibility 0s;
+}
+
+.onboarding-overlay.is-black {
+  opacity: 1;
+  background: #000;
+}
+
+.onboarding-overlay.is-black .onboarding-field-wrap {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.onboarding-scrim {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 45%,
+    rgba(15, 15, 15, 0.92) 0%,
+    #0a0a0a 100%
+  );
+}
+
+.onboarding-field-wrap {
+  position: relative;
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  z-index: 1;
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease;
+}
+
+.onboarding-input-wrap {
+  width: 100%;
+}
+
+.onboarding-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  justify-content: center;
+  width: 100%;
+}
+
+.onboarding-choice-btn {
+  flex: 1 1 calc(50% - 0.3rem);
+  min-width: 8rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.65rem;
+  border: 1px solid rgba(237, 232, 224, 0.18);
+  background: rgba(18, 18, 18, 0.85);
+  color: var(--fg);
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.onboarding-choice-btn:hover,
+.onboarding-choice-btn:focus-visible {
+  border-color: rgba(109, 223, 140, 0.45);
+  outline: none;
+}
+
+.onboarding-overlay.is-step-visible .onboarding-field-wrap {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.onboarding-label {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.45;
+  color: var(--fg);
+  opacity: 0;
+  transition: opacity 0.55s ease 0.05s;
+}
+
+.onboarding-overlay.is-step-visible .onboarding-label {
+  opacity: 0.92;
+}
+
+.onboarding-input {
+  width: 100%;
+  border: 1px solid rgba(237, 232, 224, 0.14);
+  background: rgba(10, 10, 10, 0.75);
+  color: var(--fg);
+  border-radius: 0.65rem;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  outline: none;
+  opacity: 0;
+  transition: opacity 0.55s ease 0.12s;
+}
+
+.onboarding-overlay.is-step-visible .onboarding-input-wrap .onboarding-input {
+  opacity: 1;
+}
+
+.onboarding-input:focus {
+  outline: 2px solid rgba(109, 223, 140, 0.35);
+  outline-offset: 2px;
+}
+
+.onboarding-overlay.is-reveal {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 1.2s ease,
+    visibility 0s linear 1.2s;
+}

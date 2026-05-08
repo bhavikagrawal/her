@@ -1,5 +1,5 @@
-# Co-locates MemPalace (Phase 2) and placeholders for future SQLite profile state.
-# MemPalace holds verbatim turns + Chroma retrieval; profile DB arrives in later phases.
+# Co-locates MemPalace long-term memory; structured onboarding profile lives in `data/profile.json` (Phase 3).
+# MemPalace holds verbatim turns + Chroma retrieval; future phases may add more tables without tangling imports.
 # The adapter stays thin so the voice loop does not import MemPalace internals directly.
 # Defining the package now keeps import paths stable for the rest of the repository.
 

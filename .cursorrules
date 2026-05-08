@@ -15,15 +15,15 @@ PROACTIVE SYSTEM RULES
 HER always speaks first on session start — never wait for user.
 Lull detector fires at 8 seconds of silence, not before.
 Check-in timer fires at 3 minutes of silence — must be cancellable.
-Profile gap questions: never repeat. Always mark as asked in SQLite immediately.
+Profile gap questions: never repeat. Mark each as asked in persistent storage immediately once Phase 4 lands (SQLite or equivalent).
 First greeting: generated fresh by LLM every time, never hardcoded.
 
 ONBOARDING RULES
-Detect first launch via SQLite profile.setup_complete field.
+Detect first launch via `data/profile.json` (`setup_complete` field).
 Form fields fade in one at a time — never all at once.
 No submit button — Enter key on last field triggers completion.
 After form: mandatory fade to black before greeting audio starts.
-Second launch: skip straight to chat. No form, no greeting.
+Second launch: skip onboarding form; HER still speaks a fresh LLM session opener (same socket).
 
 CODE RULES
 Real working code only. No TODOs. No placeholder functions.

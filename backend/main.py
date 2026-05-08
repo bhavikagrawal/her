@@ -1,9 +1,9 @@
-# Starts HER's Python sidecar: WebSocket control plus full-duplex voice + MemPalace memory hooks.
+# Starts HER's Python sidecar: WebSocket control, onboarding_status handshake, voice + MemPalace hooks.
 # Each browser socket spins up a `VoiceSession` thread that chains mic → Whisper → Qwen → TTS.
 # Tauri still launches this file through `scripts/run-backend.sh` before the desktop window opens.
 # `generate_context!()` stays outside Python — Rust owns menus/icons while Python owns time-domain audio.
 
-"""WebSocket entry point for the HER desktop app (voice, streaming chat, memory_status)."""
+"""WebSocket entry point for the HER desktop app (voice, streaming chat, onboarding, memory_status)."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from websockets.legacy.server import WebSocketServerProtocol
 from websockets.typing import Data
 
 from backend.memory.mempalace_adapter import status_dict as mempalace_status_dict
+from backend.onboarding.profile import is_first_launch, load_profile
 from backend.voice.session import VoiceSession
 
 # CONCEPT: The type we use is the object the `websockets` library hands your handler (a "connection").
@@ -82,12 +83,26 @@ async def handle_client(
     logger.info("WebSocket client connected from %s role=%s", peer, client_role)
     hello = json.dumps({"type": "status", "connected": True})
     await connection.send(hello)
+    prof = load_profile()
+    await connection.send(
+        json.dumps(
+            {
+                "type": "onboarding_status",
+                "first_launch": is_first_launch(),
+                "profile": prof.to_public_dict() if prof else None,
+            }
+        )
+    )
     try:
         # If we pulled one non-role message during handshake, process it first.
         if first_payload is not None and isinstance(first_payload, dict):
             if first_payload.get("type") == "ping":
                 await connection.send(json.dumps({"type": "pong"}))
-            elif first_payload.get("type") in ("set_audio_devices", "set_settings"):
+            elif first_payload.get("type") in (
+                "set_audio_devices",
+                "set_settings",
+                "onboarding_complete",
+            ):
                 session.enqueue_control(first_payload)
 
         async for message in connection:
@@ -112,6 +127,10 @@ async def handle_client(
                 continue
             if payload.get("type") == "user_text":
                 session.enqueue_control(payload)
+                continue
+            if payload.get("type") == "onboarding_complete":
+                session.enqueue_control(payload)
+                continue
     except websockets.exceptions.ConnectionClosedOK:
         logger.info("Client disconnected normally")
     except websockets.exceptions.ConnectionClosedError as exc:

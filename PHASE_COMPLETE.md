@@ -24,6 +24,14 @@
 - `backend/main.py`: WebSocket `{"type":"memory_status"}` returns JSON status (drawer counts, paths).
 - `scripts/her_memory_status.sh`: prints the same status without opening the app (requires venv + `PYTHONPATH`).
 
+## What Phase 3 delivered (onboarding + greeting)
+
+- **`data/profile.json`** — single-user onboarding answers (`name`, `gender`, `city`; **`preferred_language` defaults to English** / `en`), `setup_complete`, plus offline **`location`** `{country, region, confident}` from local **`qwen2.5:7b`** (`backend/onboarding/location.py`).
+- **`backend/onboarding/profile.py`** — atomic JSON read/write; **`backend/onboarding/greeting.py`** — first-greeting chat messages; voice pipeline unchanged for streaming + Kokoro/`say`.
+- **`backend/main.py`** — after `status connected`, sends **`onboarding_status`** `{first_launch, profile}`; **`onboarding_complete`** from the UI is queued into `VoiceSession`.
+- **`backend/voice/session.py`** — defers the normal session opener until onboarding finishes when `first_launch`; **`onboarding_resolved`** echoes resolved location; system prompt gains a **User profile** block for every turn after setup.
+- **`frontend/`** — fullscreen overlay: one question at a time, **Enter** advances/submits (no button); fade to black, then overlay fades out when **`her_speaking`** starts so text + waveform appear as HER speaks.
+
 ## What Phase 0 delivered (foundation)
 
 - Folder skeleton under `backend/`, `frontend/`, `src-tauri/`, `scripts/`, and `agent_library/`.
@@ -184,37 +192,38 @@ Pass condition: biryani recalled correctly after **full app restart**.
 
 PHASE 3 — Onboarding + greeting
 
-What to test: first-launch form works. Greeting is spoken and feels cinematic.
+What to test: first-launch form works (city, not full address). Greeting is spoken and feels cinematic.
 
 Steps:
 
 ```
-rm her/data/profile.db   (wipe profile to simulate first launch)
-cargo tauri dev
-Fill in form: name, address preference, gender, language. Press Enter on last field.
+cd her
+rm -f data/profile.json   (wipe profile to simulate first launch)
+cargo tauri dev   (from src-tauri)
+Answer each prompt (name → gender → city). Press Enter on the last field (or tap gender buttons).
 ```
 
 What you should see:
 
-Each form field fades in one at a time on dark screen.
+Each question fades in one at a time on a dark fullscreen overlay.
 
-After last field: screen fades to black.
+After the last field: overlay fades to black.
 
-HER speaks the greeting — warm, personal, uses your name.
+HER speaks the first greeting — warm, personal, uses your name; if the city is ambiguous, she may ask which place you mean.
 
-Words appear on screen as she speaks.
+Words stream on screen as she speaks; waveform animates.
 
-After greeting ends: chat UI fades in slowly.
+When HER starts speaking, the overlay fades away and the normal chat view appears beneath.
 
-Second launch (without rm): goes straight to chat, no form.
+Second launch (without `rm`): no overlay; HER speaks the usual session opener with your saved name.
 
 Most likely failure:
 
-Form fields all appear at once → check onboarding.js fade-in timing (CSS transitions)
+Fields appear stacked → check `frontend/onboarding.css` / `app.js` (`is-step-visible` toggles one step at a time).
 
-Greeting sounds generic → check greeting.py is passing name + gender + language to LLM
+`onboarding_complete` never fires → WebSocket must stay open; watch Python logs for exceptions in `_complete_onboarding`.
 
-Pass condition: cinematic form, warm spoken greeting, correct name used, no form on second launch.
+Pass condition: cinematic steps, warm spoken greeting, correct name; **no overlay** on second launch.
 
 ---
 
@@ -240,17 +249,18 @@ Terminal log: `[PROACTIVE] lull detected after 8.2s, generating question`
 
 Terminal log: `[PROACTIVE] gap selected: childhood`
 
-SQLite: questions marked as asked:
+SQLite: questions marked as asked (Phase 4 will introduce persistence — tables/paths TBD):
 
 ```
-sqlite3 her/data/profile.db "SELECT * FROM asked_questions;"
+# Example once Phase 4 lands:
+# sqlite3 data/profile.db "SELECT * FROM asked_questions;"
 ```
 
 Most likely failure:
 
 Opener fires before app is fully loaded → add 1.5s delay after WebSocket connect
 
-Same question repeated → check profile_gaps.py is writing to asked_questions table
+Same question repeated → once Phase 4 ships, verify the gap tracker writes asked-question IDs to persistent storage.
 
 Pass condition: opener heard, lull question heard, no repeat on second silence.
 
@@ -275,9 +285,9 @@ Say the same thing again → she should reuse the saved agent (no regeneration).
 
 Most likely failure:
 
-Agent generation fails syntax check → check agent_factory.py validation output
+Agent generation fails syntax check → re-run when Phase 5 `agent_factory` module exists; validate generated Python in a sandbox.
 
-Online call blocked → check online/decision.py confidence threshold
+Online call blocked → check intent approval / confidence gate once Phase 5 online layer exists.
 
 Pass condition: web result returned, agent saved, reused on second ask.
 
@@ -313,7 +323,7 @@ sqlite3 her/data/profile.db "SELECT current_phase FROM app_state;"
 
 Most likely failure:
 
-XTTS training crashes on 16GB → check absorber.py noise filter (low-quality samples bloat memory)
+XTTS training crashes on 16GB → when Phase 6 `absorber` returns, check noise filter (low-quality samples bloat memory)
 
 Voice sounds robotic → need more/cleaner audio samples
 
